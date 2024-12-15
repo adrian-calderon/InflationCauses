@@ -1,0 +1,269 @@
+---
+title: "Analysis of Economic Indicators"
+author: "Adrián Calderón"
+date: "`r Sys.Date()`"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Libraries
+
+```{r libraries}
+library(ggplot2)
+library(forecast)
+library(vars)
+library(TSstudio)
+library(snow)
+library(purrr)
+library(tidyverse)
+library(httpgd)
+library(lmtest)
+library(Metrics)
+library(boot)
+library(plotly)
+library(dplyr)
+library(tidyr)
+library(shiny)
+library(readr)
+library(tseries)
+library(vars)
+library(urca)
+library(randomForest)
+```
+
+## Data Preparation
+
+```{r data-prep}
+# Define the file paths and corresponding dataset names
+# Load data
+data_path <- "C:/Users/Adrián Calderón/Desktop/SDSU/Junior Year/Semester 1/STAT442/Final Project/Data/"
+datasets <- list(
+  M1 = "M1SL.csv",
+  M2 = "M2SL.csv",
+  CPI = "CPIAUCSL.csv",
+  GovExp = "FGEXPND.csv",
+  GovDefSurp = "MTSDS133FMS.csv", 
+  IndPro = "INDPRO.csv",
+  ScarceRes = "PPIACO.csv",
+  Debt = "GFDEBTN.csv"
+)
+
+# Read and merge all datasets
+all_data <- lapply(names(datasets), function(dataset) {
+  data <- read_csv(paste0(data_path, datasets[[dataset]]))
+  colnames(data) <- c("DATE", dataset)
+  data$DATE <- as.Date(data$DATE)
+  data
+})
+
+df <- Reduce(function(x, y) merge(x, y, by = "DATE", all = TRUE), all_data) %>%
+  na.omit() %>%
+  arrange(DATE)
+
+# View the first few rows of the cleaned data and its summary
+print(head(df))
+summary(df)
+
+# Convert DATE from character to Date type
+df$DATE <- as.Date(df$DATE)
+```
+
+## Time Series Comparisons
+
+```{r plots}
+# Global datasets definition
+data_path_pct <- "C:/Users/Adrián Calderón/Desktop/SDSU/Junior Year/Semester 1/STAT442/Final Project/PctChangeData/"
+data_path_abs <- "C:/Users/Adrián Calderón/Desktop/SDSU/Junior Year/Semester 1/STAT442/Final Project/Data/"
+
+datasets_pct <- list(
+  M1 = "M1SL.csv",
+  M2 = "M2SL.csv",
+  CPI = "CPIAUCSL.csv",
+  GovExp = "FGEXPND.csv",
+  GovDefSurp = "MTSDS133FMS.csv",
+  IndPro = "INDPRO.csv",
+  ScarceRes = "PPIACO.csv",
+  Debt = "GFDEBTN.csv"
+)
+
+# Define UI for application
+ui <- fluidPage(
+  titlePanel("Dynamic Time Series Visualization"),
+  tabsetPanel(
+    tabPanel("Percent Change",
+             fluidRow(
+               column(12,
+                      selectInput("variable_pct", "Choose a variable to display (Percent Change):",
+                                  choices = names(datasets_pct),
+                                  multiple = TRUE,
+                                  width = '100%')
+               )
+             ),
+             fluidRow(
+               column(12,
+                      plotlyOutput("timeSeriesPlot_pct", height = "700px")
+               )
+             )
+    ),
+    tabPanel("Absolute Quantities",
+             fluidRow(
+               column(12,
+                      selectInput("variable_abs", "Choose a variable to display (Absolute Quantities):",
+                                  choices = names(datasets_pct), # Assuming same datasets names for simplicity
+                                  multiple = TRUE,
+                                  width = '100%')
+               )
+             ),
+             fluidRow(
+               column(12,
+                      plotlyOutput("timeSeriesPlot_abs", height = "700px")
+               )
+             )
+    )
+  )
+)
+
+# Server logic
+server <- function(input, output) {
+  
+  # Load and clean data functions
+  loadData <- function(data_path, datasets) {
+    lapply(names(datasets), function(dataset) {
+      data <- read_csv(paste0(data_path, datasets[dataset]))
+      colnames(data) <- c("DATE", dataset)
+      data$DATE <- as.Date(data$DATE)
+      data[[dataset]] <- as.numeric(as.character(data[[dataset]]))  # Convert to numeric
+      data
+    }) %>%
+      reduce(full_join, by = "DATE") %>%
+      arrange(DATE)
+  }
+  
+  df_pct <- loadData(data_path_pct, datasets_pct)
+  df_abs <- loadData(data_path_abs, datasets_pct)  # Assuming same filenames for simplicity
+  
+  output$timeSeriesPlot_pct <- renderPlotly({
+  # Ensure there are variables selected
+  vars_to_plot_pct <- input$variable_pct
+  if (length(vars_to_plot_pct) == 0) return(NULL)
+
+  # Prepare the data
+  plot_data_pct <- df_pct %>%
+    dplyr::select(DATE, all_of(vars_to_plot_pct)) %>%
+    tidyr::pivot_longer(cols = -DATE, names_to = "Series", values_to = "Value")
+
+  # Basic line plot
+  p_pct <- ggplot(plot_data_pct, aes(x = DATE, y = Value, color = Series)) +
+    geom_line() +
+    labs(title = "Time Series of Selected Economic Indicators (Percent Change)",
+         x = "Date", y = "Value", color = "Indicator") +
+    theme_minimal() +
+    guides(color = guide_legend(title = "Indicator"))
+
+  # Convert to Plotly
+  ggplotly(p_pct)
+})
+
+output$timeSeriesPlot_abs <- renderPlotly({
+  vars_to_plot_abs <- input$variable_abs
+  if (length(vars_to_plot_abs) == 0) return(NULL)
+
+  plot_data_abs <- df_abs %>%
+    dplyr::select(DATE, all_of(vars_to_plot_abs)) %>%
+    tidyr::pivot_longer(cols = -DATE, names_to = "Series", values_to = "Value")
+
+  p_abs <- ggplot(plot_data_abs, aes(x = DATE, y = Value, color = Series)) +
+    geom_line() +
+    labs(title = "Time Series of Selected Economic Indicators (Absolute Quantities)",
+         x = "Date", y = "Value", color = "Indicator") +
+    theme_minimal() +
+    guides(color = guide_legend(title = "Indicator"))
+
+  ggplotly(p_abs)
+})
+
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
+```
+
+## Correlation Analysis
+
+```{r correlation}
+# Correlation matrix of the variables
+correlation_matrix <- cor(select(df, -DATE))
+corr_plot <- ggplot(data = as.data.frame(as.table(correlation_matrix)), aes(Var1, Var2, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Correlation Matrix", x = "", y = "", fill = "Correlation")
+
+# Convert to interactive plotly object
+interactive_corr_plot <- ggplotly(corr_plot)
+interactive_corr_plot
+
+
+# Calculate correlation matrix
+correlation_matrix2 <- cor(select(df, -DATE))
+corr_data <- as.data.frame(as.table(correlation_matrix2))
+# Create the correlation plot with actual coefficients
+corr_plot2 <- ggplot(data = corr_data, aes(Var1, Var2, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = round(Freq, 2)), color = "black", size = 3) + # Add text for coefficients
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Correlation Matrix", x = "", y = "", fill = "Correlation")
+
+# Convert to interactive plotly object
+interactive_corr_plot2 <- ggplotly(corr_plot2)
+interactive_corr_plot2
+```
+
+## Econometric Analysis
+
+```{r econometric-analysis}
+#1. Base Model with M1 and M2:
+model1 <- lm(CPI ~ M1 + M2, data = df)
+summary(model1)
+
+#2. Including Government Spending:
+model2 <- lm(CPI ~ M1 + M2 + GovExp, data = df)
+summary(model2)
+
+#3. Adding Government Deficit/Surplus:
+model3 <- lm(CPI ~ M1 + M2 + GovExp+ GovDefSurp, data = df)
+summary(model3)
+
+#4. Incorporating Industrial Production:
+model4 <- lm(CPI ~ M1 + M2 + GovExp + GovDefSurp + IndPro, data = df)
+summary(model4)
+
+#5. Including Producer Price Index (Scarce Resources):
+model5 <- lm(CPI ~ M1 + M2 + GovExp + GovDefSurp + IndPro + ScarceRes, data = df)
+summary(model5)
+
+#6. Adding Total Federal Debt:
+model6 <- lm(CPI ~ M1 + M2 + GovExp + GovDefSurp + IndPro + ScarceRes + Debt, data = df)
+summary(model6)
+
+
+# Set seed for reproducibility
+set.seed(123)
+# Create a random forest model
+rf_model <- randomForest(CPI ~ M1 + M2 + GovExp + GovDefSurp + IndPro + ScarceRes + Debt, data = df)
+# Extract variable importance from the random forest model 
+var_imp <- data.frame(Variable = rownames(importance(rf_model)), Importance = importance(rf_model)[, "IncNodePurity"])
+# Create lollipop plot with flipped axes
+ggplot(var_imp, aes(x = Importance, y = reorder(Variable, Importance))) + 
+  geom_segment(aes(x = 0, y = Variable, xend = Importance, yend = Variable), color = "gray") + 
+  geom_point(size = 3, color = "blue") + 
+  labs(title = "Variable Importance in Random Forest Model", 
+       x = "Importance", 
+       y = "") + 
+  theme_minimal()
+```
